@@ -7,19 +7,46 @@ tqdm>=4.67.1
 certifi>=2024.2.2
 
 # box
-# python desensitize.py \
-#   --mode boxes \
-#   --input data/imgs --output out_boxes --glob "*.png" \
-#   --plate-model "https://huggingface.co/morsetechlab/yolov11-license-plate-detection/resolve/main/license-plate-finetune-v1n.pt"
+python desensitize.py \
+  --input data/imgs \
+  --output out_boxes_looser \
+  --glob "*.png" \
+  --mode boxes --print-scores \
+  --plate-model weights/plate-v1n.pt \
+  --plate-conf 0.22 \
+  --plate-imgsz 1280 \
+  --plate-iou 0.50 \
+  --plate-min-size 10 --plate-min-width 38 \
+  --plate-ar-min 0.88 --plate-ar-max 6.2 \
+  --plate-reject-red --plate-red-frac 0.35 \
+  --plate-require-light-bg --plate-light-frac 0.20 --plate-light-vmin 130 \
+  --plate-merge-iou 0.70 \
+  --plate-max-width-frac 0.60 --plate-max-height-frac 0.28 --plate-max-area-frac 0.15 \
+  --face-score-thres 0.50 \
+  --face-nms-thres 0.40 \
+  --face-min-size 16 \
+  --face-ar-min 0.55 --face-ar-max 2.30 \
+  --face-imgsz 800
 
-# box local weights
-# python desensitize.py \
-#   --input data/imgs --output out \
-#   --glob "*.png" --mode blur \
-#   --plate-model weights/plate-v1n.pt
-
-# blur
-# python desensitize.py \
-#   --mode blur \
-#   --input data/imgs --output out_blur --glob "*.png" \
-#   --plate-model "https://huggingface.co/morsetechlab/yolov11-license-plate-detection/resolve/main/license-plate-finetune-v1n.pt"
+# mosaic
+python desensitize.py \
+  --input data/imgs \
+  --output out_mosaic_looser \
+  --glob "*.png" \
+  --mode blur --blur pixelate --pixel-size 14 \
+  --plate-model weights/plate-v1n.pt \
+  --plate-conf 0.22 \
+  --plate-imgsz 1280 \
+  --plate-iou 0.50 \
+  --plate-min-size 10 --plate-min-width 38 \
+  --plate-ar-min 0.88 --plate-ar-max 6.2 \
+  --plate-reject-red --plate-red-frac 0.35 \
+  --plate-require-light-bg --plate-light-frac 0.20 --plate-light-vmin 130 \
+  --plate-merge-iou 0.70 \
+  --plate-max-width-frac 0.60 --plate-max-height-frac 0.28 --plate-max-area-frac 0.15 \
+  --face-score-thres 0.50 \
+  --face-nms-thres 0.40 \
+  --face-min-size 16 \
+  --face-ar-min 0.55 --face-ar-max 2.30 \
+  --face-imgsz 800 \
+  --print-scores
