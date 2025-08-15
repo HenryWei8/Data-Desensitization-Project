@@ -17,6 +17,16 @@ def clamp_geometry(x: int, y: int, w: int, h: int, W: int, H: int) -> Tuple[int,
     w = max(1, min(W - x, w)); h = max(1, min(H - y, h))
     return x, y, w, h
 
+def filter_plate_roi_scores(boxes, img_shape, y_min_f, y_max_f):
+    H = img_shape[0]
+    y_min, y_max = H * y_min_f, H * y_max_f
+    out = []
+    for (x,y,w,h,s) in boxes:
+        cy = y + h/2.0
+        if y_min <= cy <= y_max:
+            out.append((x,y,w,h,s))
+    return out
+
 def filter_by_geometry_scores(
     boxes: List[Tuple[int,int,int,int,float]],
     img_shape,
@@ -107,7 +117,7 @@ def detect_plates(frame_bgr: np.ndarray, model,
                 x1 = max(0, x1); y1 = max(0, y1)
                 x2 = min(W - 1, x2); y2 = min(H - 1, y2)
                 if x2 > x1 and y2 > y1:
-                    dx = int(0.05 * (x2 - x1)); dy = int(0.10 * (y2 - y1))
+                    dx = int(0.03 * (x2 - x1)); dy = int(0.08 * (y2 - y1))
                     x0 = max(0, x1 - dx); y0 = max(0, y1 - dy)
                     x3 = min(W - 1, x2 + dx); y3 = min(H - 1, y2 + dy)
                     boxes.append((x0, y0, x3 - x0, y3 - y0, conf))
@@ -270,6 +280,9 @@ def process_image(in_path: Path, out_path: Path, args, yunet=None, plate=None):
         plates = filter_plate_maxsize_scores(
             plates, img.shape, args.plate_max_width_frac, args.plate_max_height_frac, args.plate_max_area_frac
         )
+        plates = filter_plate_roi_scores(plates, img.shape,
+                                 args.plate_ymin_frac, args.plate_ymax_frac)
+
         if args.plate_reject_red:
             plates = filter_red_dominant_scores(img, plates, args.plate_red_frac)
         if args.plate_require_light_bg:
@@ -335,6 +348,8 @@ def main():
     ap.add_argument("--pixel-size", type=int, default=12)
 
     # plate detector thresholds/filters
+    ap.add_argument("--plate-ymin-frac", type=float, default=0.30)
+    ap.add_argument("--plate-ymax-frac", type=float, default=0.95)
     ap.add_argument("--plate-model", type=str,
         default="https://huggingface.co/morsetechlab/yolov11-license-plate-detection/resolve/main/license-plate-finetune-v1n.pt")
     ap.add_argument("--plate-conf", type=float, default=0.25,
