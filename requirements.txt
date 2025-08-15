@@ -9,44 +9,42 @@ certifi>=2024.2.2
 # box
 python desensitize.py \
   --input data/imgs \
-  --output out_boxes_looser \
+  --output out_boxes_loose017 \
   --glob "*.png" \
   --mode boxes --print-scores \
   --plate-model weights/plate-v1n.pt \
-  --plate-conf 0.22 \
-  --plate-imgsz 1280 \
+  --plate-conf 0.17 \
+  --plate-imgsz 1728 \
   --plate-iou 0.50 \
-  --plate-min-size 10 --plate-min-width 38 \
-  --plate-ar-min 0.88 --plate-ar-max 6.2 \
-  --plate-reject-red --plate-red-frac 0.35 \
-  --plate-require-light-bg --plate-light-frac 0.20 --plate-light-vmin 130 \
-  --plate-merge-iou 0.70 \
-  --plate-max-width-frac 0.60 --plate-max-height-frac 0.28 --plate-max-area-frac 0.15 \
-  --face-score-thres 0.50 \
-  --face-nms-thres 0.40 \
-  --face-min-size 16 \
-  --face-ar-min 0.55 --face-ar-max 2.30 \
+  --plate-min-size 10 --plate-min-width 30 \
+  --plate-ar-min 1.00 --plate-ar-max 5.5 \
+  --plate-ymin-frac 0.30 --plate-ymax-frac 0.95 \
+  --plate-reject-red --plate-red-frac 0.45 \
+  --plate-require-light-bg --plate-light-frac 0.18 --plate-light-vmin 120 \
+  --no-plate-merge \
+  --plate-max-width-frac 0.50 --plate-max-height-frac 0.20 --plate-max-area-frac 0.08 \
+  --face-score-thres 0.56 --face-nms-thres 0.35 \
+  --face-min-size 16 --face-ar-min 0.60 --face-ar-max 2.20 \
   --face-imgsz 800
 
-# mosaic
+#blurr
 python desensitize.py \
   --input data/imgs \
-  --output out_mosaic_looser \
+  --output out_mosaic_loose_safe \
   --glob "*.png" \
   --mode blur --blur pixelate --pixel-size 14 \
   --plate-model weights/plate-v1n.pt \
-  --plate-conf 0.22 \
-  --plate-imgsz 1280 \
+  --plate-conf 0.19 \
+  --plate-imgsz 1728 \
   --plate-iou 0.50 \
-  --plate-min-size 10 --plate-min-width 38 \
-  --plate-ar-min 0.88 --plate-ar-max 6.2 \
-  --plate-reject-red --plate-red-frac 0.35 \
-  --plate-require-light-bg --plate-light-frac 0.20 --plate-light-vmin 130 \
-  --plate-merge-iou 0.70 \
-  --plate-max-width-frac 0.60 --plate-max-height-frac 0.28 --plate-max-area-frac 0.15 \
-  --face-score-thres 0.50 \
-  --face-nms-thres 0.40 \
-  --face-min-size 16 \
-  --face-ar-min 0.55 --face-ar-max 2.30 \
+  --plate-min-size 10 --plate-min-width 30 \
+  --plate-ar-min 1.00 --plate-ar-max 5.5 \
+  --plate-ymin-frac 0.30 --plate-ymax-frac 0.95 \
+  --plate-reject-red --plate-red-frac 0.45 \
+  --plate-require-light-bg --plate-light-frac 0.18 --plate-light-vmin 120 \
+  --no-plate-merge \
+  --plate-max-width-frac 0.50 --plate-max-height-frac 0.20 --plate-max-area-frac 0.08 \
+  --face-score-thres 0.56 --face-nms-thres 0.35 \
+  --face-min-size 16 --face-ar-min 0.60 --face-ar-max 2.20 \
   --face-imgsz 800 \
   --print-scores
