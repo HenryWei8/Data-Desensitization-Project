@@ -1,0 +1,25 @@
+numpy==1.26.4
+opencv-contrib-python==4.11.0.86
+ultralytics==8.3.179  
+torch>=2.1
+torchvision>=0.16
+tqdm>=4.67.1
+certifi>=2024.2.2
+
+# box
+# python desensitize.py \
+#   --mode boxes \
+#   --input data/imgs --output out_boxes --glob "*.png" \
+#   --plate-model "https://huggingface.co/morsetechlab/yolov11-license-plate-detection/resolve/main/license-plate-finetune-v1n.pt"
+
+# box local weights
+# python desensitize.py \
+#   --input data/imgs --output out \
+#   --glob "*.png" --mode blur \
+#   --plate-model weights/plate-v1n.pt
+
+# blur
+# python desensitize.py \
+#   --mode blur \
+#   --input data/imgs --output out_blur --glob "*.png" \
+#   --plate-model "https://huggingface.co/morsetechlab/yolov11-license-plate-detection/resolve/main/license-plate-finetune-v1n.pt"
