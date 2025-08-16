@@ -79,6 +79,7 @@ def detect_faces_yunet(frame_bgr: np.ndarray, yunet,
         # det row: [x, y, w, h, score, ...landmarks]
         for d in dets:
             x, y, w, h = map(int, d[:4]); score = float(d[4])
+            score = float(d[-1])
             dx, dy = int(pad_x * w), int(pad_y * h)
             x0 = max(0, x - dx); y0 = max(0, y - dy)
             x1 = min(W - 1, x + w + dx); y1 = min(H - 1, y + h + dy)
@@ -216,7 +217,6 @@ def filter_plate_maxsize_scores(
     return out
 
 
-# ---------- render ----------
 def gaussian_blur_roi(img: np.ndarray, x: int, y: int, w: int, h: int, k: Optional[int]):
     roi = img[y:y+h, x:x+w]
     if roi.size == 0:
