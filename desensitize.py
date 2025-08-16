@@ -4,10 +4,6 @@ import cv2, numpy as np
 from tqdm import tqdm
 
 
-def in_lower_vehicle(y, h, vy, vh, low_frac=0.35, high_frac=0.95):
-    cy = y + 0.5*h
-    return (vy + low_frac*vh) <= cy <= (vy + high_frac*vh)
-
 def iou_xywh(a, b):
     ax, ay, aw, ah = a; bx, by, bw, bh = b
     x1, y1 = max(ax, bx), max(ay, by)
@@ -16,15 +12,19 @@ def iou_xywh(a, b):
     if inter <= 0: return 0.0
     return inter / float(aw * ah + bw * bh - inter)
 
+
 def detect_plates_global(img_bgr, plate_model, conf, iou, imgsz):
     H, W = img_bgr.shape[:2]
     out = []
-    res = plate_model.predict(source=img_bgr, conf=conf, iou=iou, imgsz=imgsz, verbose=False)
+    res = plate_model.predict(
+        source=img_bgr, conf=conf, iou=iou, imgsz=imgsz,
+        verbose=False, agnostic_nms=True
+    )
     for r in res:
         names = r.names
         for b in r.boxes:
             name = names.get(int(b.cls[0]), "?").lower()
-            if "plate" not in name and "license" not in name:
+            if ("plate" not in name) and ("license" not in name):
                 continue
             x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
             s = float(b.conf[0])
@@ -96,7 +96,9 @@ def load_yolo(model_path: str):
 def yolo_detect(img_bgr, model, conf=0.25, iou=0.5, imgsz=640, name_allow=None):
     H, W = img_bgr.shape[:2]
     out = []
-    for r in model.predict(source=img_bgr, conf=conf, iou=iou, imgsz=imgsz, verbose=False):
+    for r in model.predict(
+            source=img_bgr, conf=conf, iou=iou, imgsz=imgsz,
+            verbose=False, agnostic_nms=True):
         names = r.names
         for b in r.boxes:
             x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
@@ -137,56 +139,90 @@ def assign_one_plate_per_vehicle(
     for (vx, vy, vw, vh, _, _) in vehicles:
         vx, vy, vw, vh = clamp_box(vx, vy, vw, vh, W, H)
         crop = img_bgr[vy:vy + vh, vx:vx + vw]
-        res = plate_model.predict(source=crop, conf=probe_conf, iou=iou, imgsz=imgsz, verbose=False)
-        cands = []
+
+        res = plate_model.predict(
+            source=crop, conf=probe_conf, iou=iou, imgsz=imgsz,
+            verbose=False, agnostic_nms=True
+        )
+
+        # Build two lists:
+        cands_all, cands_low = [], []
         for r in res:
             names = r.names
             for b in r.boxes:
                 name = names.get(int(b.cls[0]), "?").lower()
-                if "plate" not in name and "license" not in name: continue
+                if ("plate" not in name) and ("license" not in name):
+                    continue
                 x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
                 s = float(b.conf[0])
+
+                # back to full-image coords
                 x1 += vx; y1 += vy; x2 += vx; y2 += vy
                 x1 = max(0, x1); y1 = max(0, y1); x2 = min(W - 1, x2); y2 = min(H - 1, y2)
-                if x2 <= x1 or y2 <= y1: continue
-                w = x2 - x1; h = y2 - y1
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                w, h = x2 - x1, y2 - y1
+
+                # size gates
                 mw = max(min_w_px, int(min_w_frac * vw))
                 mh = max(min_h_px, int(min_h_frac * vh))
-                if w < mw or h < mh: continue
-                w = x2 - x1; h = y2 - y1
-                if not in_lower_vehicle(y1, h, vy, vh): continue
-                cands.append((x1, y1, w, h, s))
-        if not cands: continue
-        leftmost_x = min(c[0] for c in cands)
-        strong = [c for c in cands if c[4] >= inveh_conf]
+                if w < mw or h < mh:
+                    continue
+
+                cands_all.append((x1, y1, w, h, s))
+
+                # vertical cutoff: below 30% from top
+                cy = y1 + h / 2.0
+                low = vy + 0.30 * vh
+                if cy >= low:
+                    cands_low.append((x1, y1, w, h, s))
+
+        if not cands_all:
+            continue
+
+        # strong path (vertical cutoff + confidence)
+        strong = [c for c in cands_low if c[4] >= inveh_conf]
         pool = strong
+
+        # bottom-left fallback: ignores vertical cutoff & confidence
         if not pool and bl_allow:
             bx = vx + bl_x_frac * vw
             by = vy + vh - bl_y_frac * vh
             pool = []
-            for (x, y, w, h, s) in cands:
-                cx, cy = x + w / 2, y + h / 2
+            for (x, y, w, h, s) in cands_all:
+                cx, cy = x + w / 2.0, y + h / 2.0
                 if cx <= bx and cy >= by:
                     pool.append((x, y, w, h, s))
-        if not pool: continue
+
+        if not pool:
+            continue
+
+        leftmost_x = min(c[0] for c in pool)
         best, best_sc = None, -1.0
         for (x, y, w, h, s) in pool:
             sc = s + (leftmost_bonus if x == leftmost_x else 0.0)
             if sc > best_sc:
                 best_sc, best = sc, (x, y, w, h, s)
-        if best: chosen.append(best)
+
+        if best:
+            chosen.append(best)
+
     return chosen
 
 
 def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
     img = cv2.imread(str(path_in))
     if img is None: return False, f"Cannot read {path_in}"
+
     faces = [] if args.no_faces else detect_faces(img, yunet)
+
     vehicles = [] if args.no_vehicles else yolo_detect(
         img, veh_model,
         conf=args.vehicle_conf, iou=args.vehicle_iou, imgsz=args.vehicle_imgsz,
         name_allow=["car", "truck", "bus", "motorcycle", "motorbike"]
     )
+
     plates = [] if args.no_plates else assign_one_plate_per_vehicle(
         img, plate_model, vehicles,
         args.plate_probe_conf, args.plate_inveh_conf,
@@ -194,13 +230,21 @@ def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
         args.plate_override_bottomleft, args.plate_blx_frac, args.plate_bly_frac,
         args.plate_min_w_px, args.plate_min_h_px, args.plate_min_w_frac, args.plate_min_h_frac
     )
+
     if (not args.no_plates) and args.plate_accept_global:
         gplates = detect_plates_global(img, plate_model, args.plate_global_conf, args.plate_iou, args.plate_imgsz)
         for gx, gy, gw, gh, gs in gplates:
+            # avoid dupes
             if any(iou_xywh((gx, gy, gw, gh), (x, y, w, h)) >= args.plate_dup_iou
                    for (x, y, w, h, _) in plates):
                 continue
             plates.append((gx, gy, gw, gh, gs))
+
+    if args.debug:
+        print(f"[{path_in.name}] vehicles={len(vehicles)} plates={len(plates)} faces={len(faces)}")
+        if plates:
+            print("  plate boxes:", [(x, y, w, h, round(s, 3)) for (x, y, w, h, s) in plates])
+
     if args.mode == "boxes":
         for (x, y, w, h, s, _) in vehicles: draw_box(img, (x, y, w, h), "VEHICLE", s, (0, 255, 0), 2)
         for (x, y, w, h, s)     in plates:   draw_box(img, (x, y, w, h), "PLATE",   s, (0, 180, 255), 2)
@@ -209,10 +253,13 @@ def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
         rois = []
         if not args.no_plates: rois += [(x, y, w, h) for (x, y, w, h, _) in plates]
         if not args.no_faces:  rois += [(x, y, w, h) for (x, y, w, h, _) in faces]
+        if args.debug:
+            print("  ROIs to blur:", len(rois))
         k = args.kernel if (args.kernel is None or args.kernel % 2 == 1) else args.kernel + 1
         for (x, y, w, h) in rois:
             if args.blur == "pixelate": pixelate_roi(img, x, y, w, h, args.pixel_size)
             else: gaussian_blur_roi(img, x, y, w, h, k)
+
     ensure_parent_dir(path_out)
     ok = cv2.imwrite(str(path_out), img)
     return ok, None if ok else f"Failed to write {path_out}"
@@ -227,36 +274,47 @@ def main():
     ap.add_argument("--no-faces", action="store_true")
     ap.add_argument("--no-vehicles", action="store_true")
     ap.add_argument("--no-plates", action="store_true")
+
     ap.add_argument("--face-score-thres", type=float, default=0.50)
     ap.add_argument("--face-nms-thres",   type=float, default=0.45)
     ap.add_argument("--face-imgsz",       type=int,   default=800)
+
     ap.add_argument("--vehicle-model", type=str, default="yolov8n.pt")
     ap.add_argument("--vehicle-conf",  type=float, default=0.25)
-    ap.add_argument("--vehicle-iou",   type=float, default=0.50)
+    ap.add_argument("--vehicle-iou",   type=float, default=0.60)
     ap.add_argument("--vehicle-imgsz", type=int,   default=1024)
+
     ap.add_argument("--plate-min-w-px",   type=int,   default=18)
     ap.add_argument("--plate-min-h-px",   type=int,   default=8)
     ap.add_argument("--plate-min-w-frac", type=float, default=0.03)
     ap.add_argument("--plate-min-h-frac", type=float, default=0.02)
+
     ap.add_argument("--plate-accept-global", action="store_true", default=True)
-    ap.add_argument("--plate-global-conf", type=float, default=0.50)
+    ap.add_argument("--plate-global-conf", type=float, default=0.40)
     ap.add_argument("--plate-dup-iou", type=float, default=0.5)
+
     ap.add_argument("--plate-model",        type=str,   default="weights/plate-v1n.pt")
     ap.add_argument("--plate-inveh-conf",   type=float, default=0.40)
     ap.add_argument("--plate-probe-conf",   type=float, default=0.001)
-    ap.add_argument("--plate-iou",          type=float, default=0.50)
+    ap.add_argument("--plate-iou",          type=float, default=0.60)
     ap.add_argument("--plate-imgsz",        type=int,   default=1536)
     ap.add_argument("--plate-leftmost-bonus", type=float, default=0.03)
     ap.add_argument("--plate-override-bottomleft", action="store_true", default=True)
-    ap.add_argument("--plate-blx-frac", type=float, default=0.15)
-    ap.add_argument("--plate-bly-frac", type=float, default=0.20)
+    ap.add_argument("--plate-blx-frac", type=float, default=0.30)  # left 30%
+    ap.add_argument("--plate-bly-frac", type=float, default=0.40)  # bottom 40%
+
     ap.add_argument("--blur", choices=["gaussian", "pixelate"], default="pixelate")
     ap.add_argument("--kernel",     type=int, default=None)
     ap.add_argument("--pixel-size", type=int, default=14)
+
+    ap.add_argument("--debug", action="store_true")
+
     args = ap.parse_args()
+
     yunet       = None if args.no_faces    else load_yunet(args.face_score_thres, args.face_nms_thres, args.face_imgsz)
     veh_model   = None if args.no_vehicles else load_yolo(args.vehicle_model)
     plate_model = None if args.no_plates   else load_yolo(args.plate_model)
+
     in_path, out_root = Path(args.input), Path(args.output)
     if in_path.is_file():
         files = [in_path]
