@@ -38,16 +38,17 @@ def load_yunet(score_thres=0.6, nms_thres=0.3, size=320):
                                      nms_threshold=nms_thres, top_k=5000)
 
 def detect_faces(img_bgr, yunet):
-    H,W = img_bgr.shape[:2]
-    yunet.setInputSize((W,H))
+    H, W = img_bgr.shape[:2]
+    yunet.setInputSize((W, H))
     _, dets = yunet.detect(img_bgr)
-    out=[]
+    out = []
     if dets is not None:
         for d in dets:
-            x,y,w,h = map(int, d[:4]); s = float(d[4])
-            out.append((x,y,w,h,s))
+            x, y, w, h = map(int, d[:4])
+            s = float(d[4])              
+            s = max(0.0, min(1.0, s)) 
+            out.append((x, y, w, h, s))
     return out
-
 def load_yolo(model_path: str):
     from ultralytics import YOLO
     m = YOLO(model_path)
@@ -170,10 +171,21 @@ def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
         for (x,y,w,h,s,_) in vehicles: draw_box(img, (x,y,w,h), "VEHICLE", s, (0,255,0), 2)
         for (x,y,w,h,s) in plates:     draw_box(img, (x,y,w,h), "PLATE",   s, (0,180,255), 2)
         for (x,y,w,h,s) in faces:      draw_box(img, (x,y,w,h), "FACE",    s, (0,255,255), 2)
-    else:
-        for (x,y,w,h,s) in plates:
-            if args.blur=="pixelate": pixelate_roi(img,x,y,w,h,args.pixel_size)
-            else: gaussian_blur_roi(img,x,y,w,h,args.kernel)
+    else: 
+        rois = []
+        if not args.no_plates:
+            rois += [(x, y, w, h) for (x, y, w, h, _) in plates]
+        if not args.no_faces:
+            rois += [(x, y, w, h) for (x, y, w, h, _) in faces]
+        k = args.kernel
+        if k is not None and k % 2 == 0:
+            k += 1
+        for (x, y, w, h) in rois:
+            if args.blur == "pixelate":
+                pixelate_roi(img, x, y, w, h, args.pixel_size)
+            else:
+                gaussian_blur_roi(img, x, y, w, h, k)
+
 
     ensure_parent_dir(path_out)
     ok = cv2.imwrite(str(path_out), img)
