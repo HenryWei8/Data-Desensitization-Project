@@ -8,35 +8,18 @@ certifi>=2024.2.2
 
 
 
-# box
-# python desensitize.py \
+# python3 desensitize.py \
 #   --input data/imgs \
-#   --output boxes \
-#   --mode boxes \
-#   --vehicle-model yolov8n.pt \
-#   --vehicle-conf 0.25 --vehicle-iou 0.60 --vehicle-imgsz 1024 \
+#   --output mosaic_max \
+#   --glob "*.[Pp][Nn][Gg]" \
+#   --mode blur \
+#   --vehicle-model yolov8n.pt --vehicle-conf 0.18 --vehicle-iou 0.55 --vehicle-imgsz 2304 \
+#   --vehicle-pad-frac 0.12 \
 #   --plate-model weights/plate-v1n.pt \
-#   --plate-global-conf 0.001 --plate-accept-global \
-#   --plate-probe-conf 0.001 --plate-inveh-conf 0.45 \
-#   --plate-iou 0.60 --plate-imgsz 1536 \
-#   --debug
-
-
-# mosaic
-python desensitize.py \
-  --input data/imgs \
-  --output mosaic\
-  --mode blur \
-  --vehicle-model yolov8n.pt \
-  --vehicle-conf 0.25 --vehicle-iou 0.60 --vehicle-imgsz 1024 \
-  --plate-model weights/plate-v1n.pt \
-  --plate-probe-conf 0.001 \
-  --plate-inveh-conf 0.45 \
-  --plate-global-conf 0.40 --plate-accept-global \
-  --plate-iou 0.60 --plate-imgsz 1536 \
-  --plate-min-w-frac 0.02 --plate-min-h-frac 0.015 \
-  --plate-blx-frac 0.30 --plate-bly-frac 0.40 \
-  --blur pixelate --pixel-size 14 \
-  --debug
-
-
+#   --plate-probe-conf 0.001 --plate-global-conf 0.35 --plate-iou 0.60 --plate-imgsz 3584 \
+#   --plate-min-conf 0.02 --plate-min-w-frac 0.002 --plate-min-h-frac 0.0015 \
+#   --plate-merge-iou 0.50 --one-per-vehicle \
+#   --persist-frames 6 --persist-pad-frac 0.20 --track-veh-iou 0.35 \
+#   --blur pixelate --pixel-size 12 \
+#   --eval --gt-root annotated --frame-ok-thresh 0.50 --eval-keep-classes 0,1 \
+#   --cov-thresh 0.20 --iou-thresh 0.08 --debug
