@@ -314,6 +314,7 @@ def filter_and_dedup(cands, vehicles, img_wh, args):
 def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
     img = cv2.imread(str(path_in))
     if img is None: return False, f"Cannot read {path_in}"
+    H, W = img.shape[:2]
 
     faces = [] if args.no_faces else detect_faces(img, yunet)
     vehicles = [] if args.no_vehicles else yolo_detect(
@@ -366,6 +367,7 @@ def _yolo_txt_to_abs(txt_path: Path, W: int, H: int):
 
 
 def _predict_for_eval(img, args, yunet, veh_model, plate_model):
+    H, W = img.shape[:2]
 
     faces = [] if args.no_faces else detect_faces(img, yunet)
 
