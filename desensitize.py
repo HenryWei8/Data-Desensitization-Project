@@ -75,14 +75,7 @@ def _temporal_one_plate_per_vehicle(vehicles, plates, img_wh, persist_frames=3, 
             if PLATE_TRACKS[k]["age"] > persist_frames+2:
                 del PLATE_TRACKS[k]
     return out
-def iou_xywh(a, b):
-    ax, ay, aw, ah = a
-    bx, by, bw, bh = b
-    x1 = max(ax, bx); y1 = max(ay, by)
-    x2 = min(ax + aw, bx + bw); y2 = min(ay + ah, by + bh)
-    inter = max(0, x2 - x1) * max(0, y2 - y1)
-    union = aw * ah + bw * bh - inter
-    return inter / float(union) if union > 0 else 0.0
+def iou_xywh(a, b): return _box_iou_xywh(a, b)
 
 
 def ensure_parent_dir(p: Path):
@@ -321,7 +314,6 @@ def filter_and_dedup(cands, vehicles, img_wh, args):
 def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
     img = cv2.imread(str(path_in))
     if img is None: return False, f"Cannot read {path_in}"
-    H, W = img.shape[:2]
 
     faces = [] if args.no_faces else detect_faces(img, yunet)
     vehicles = [] if args.no_vehicles else yolo_detect(
@@ -374,7 +366,6 @@ def _yolo_txt_to_abs(txt_path: Path, W: int, H: int):
 
 
 def _predict_for_eval(img, args, yunet, veh_model, plate_model):
-    H, W = img.shape[:2]
 
     faces = [] if args.no_faces else detect_faces(img, yunet)
 
@@ -430,8 +421,9 @@ def _eval_dataset(args, files, in_root, gt_root, yunet, veh_model, plate_model):
         classes = [c for c in classes if c in set(args.eval_keep_classes)]
 
     print("== Evaluation ==")
+    overall_tp = overall_fn = overall_tn = 0
     for cls in classes:
-        tp = fp = fn = tn = 0
+        tp = fn = tn = 0
         for img_id, f in enumerate(files):
             gt_list = gts_by_img_cls.get((img_id, cls), [])
             pr_list = preds_by_img_cls.get((img_id, cls), [])
