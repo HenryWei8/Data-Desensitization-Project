@@ -2,8 +2,79 @@ import argparse
 from pathlib import Path
 import cv2, numpy as np
 from tqdm import tqdm
+import re
+
+PLATE_TRACKS = {}   # track_id -> {"veh":(x,y,w,h), "plate":(x,y,w,h), "age":0}
+_NEXT_TRACK_ID = 1
 
 #geometry
+def _box_iou_xywh(a, b):
+    ax, ay, aw, ah = a; bx, by, bw, bh = b
+    x1 = max(ax, bx); y1 = max(ay, by)
+    x2 = min(ax+aw, bx+bw); y2 = min(ay+ah, by+bh)
+    inter = max(0, x2-x1) * max(0, y2-y1)
+    union = aw*ah + bw*bh - inter
+    return inter/union if union>0 else 0.0
+
+def _pad_frac(box, frac, W, H):
+    if frac <= 0: return box
+    x,y,w,h = box
+    px = int(round(frac*w)); py = int(round(frac*h))
+    x -= px; y -= py; w += 2*px; h += 2*py
+    x = max(0, min(W-1, x)); y = max(0, min(H-1, y))
+    w = max(1, min(W-x, w)); h = max(1, min(H-y, h))
+    return (x,y,w,h)
+
+def _temporal_one_plate_per_vehicle(vehicles, plates, img_wh, persist_frames=3, pad_frac=0.10, veh_iou=0.5):
+    global PLATE_TRACKS, _NEXT_TRACK_ID
+    W, H = img_wh
+    perv = {i: [] for i in range(len(vehicles))}
+    for (px,py,pw,ph,ps,src) in plates:
+        best_i, best = -1, 0.0
+        for i,(vx,vy,vw,vh,_,_) in enumerate(vehicles):
+            vbox = (vx,vy,vw,vh)
+            if center_in(vbox,(px,py,pw,ph)) or _box_iou_xywh(vbox,(px,py,pw,ph))>=0.02:
+                iou = _box_iou_xywh(vbox,(px,py,pw,ph))
+                if iou>best: best, best_i = iou, i
+        if best_i>=0: perv[best_i].append((px,py,pw,ph,ps,src))
+
+    used_tracks = set()
+    out = []
+    for i,(vx,vy,vw,vh,_,_) in enumerate(vehicles):
+        vbox = (vx,vy,vw,vh)
+        tid, best = None, 0.0
+        for k,t in PLATE_TRACKS.items():
+            iou = _box_iou_xywh(t["veh"], vbox)
+            if iou >= veh_iou and iou > best:
+                best, tid = iou, k
+        if tid is None:
+            tid = _NEXT_TRACK_ID; _NEXT_TRACK_ID += 1
+            PLATE_TRACKS[tid] = {"veh": vbox, "plate": None, "age": persist_frames+1} 
+        used_tracks.add(tid)
+
+        if perv[i]:
+            cur = max(perv[i], key=lambda t: t[4])
+            PLATE_TRACKS[tid]["veh"] = vbox
+            PLATE_TRACKS[tid]["plate"] = (cur[0],cur[1],cur[2],cur[3])
+            PLATE_TRACKS[tid]["age"] = 0
+            out.append(cur)
+        else:
+            last = PLATE_TRACKS[tid].get("plate")
+            age  = PLATE_TRACKS[tid].get("age", 0)
+            if last is not None and age < persist_frames:
+                px,py,pw,ph = _pad_frac(last, pad_frac, W, H)
+                out.append((px,py,pw,ph, 0.99, "persist"))
+                PLATE_TRACKS[tid]["veh"] = vbox
+                PLATE_TRACKS[tid]["age"] = age + 1
+            else:
+                PLATE_TRACKS[tid]["veh"] = vbox
+                PLATE_TRACKS[tid]["age"] = age + 1
+    for k in list(PLATE_TRACKS.keys()):
+        if k not in used_tracks:
+            PLATE_TRACKS[k]["age"] = PLATE_TRACKS[k].get("age",0)+1
+            if PLATE_TRACKS[k]["age"] > persist_frames+2:
+                del PLATE_TRACKS[k]
+    return out
 def iou_xywh(a, b):
     ax, ay, aw, ah = a
     bx, by, bw, bh = b
@@ -163,11 +234,9 @@ def collect_plate_candidates(img_bgr, plate_model, vehicles, args):
     H, W = img_bgr.shape[:2]
     cands = []
 
-    # global
     if getattr(args, "plate_accept_global", True):
         cands.extend(detect_plates_global(img_bgr, plate_model, args.plate_global_conf, args.plate_iou, args.plate_imgsz))
 
-    # per-vehicle crops (probe at very low conf to maximize recall)
     for vi, (vx, vy, vw, vh, _, vname) in enumerate(vehicles):
         vx, vy, vw, vh = clamp_box(vx, vy, vw, vh, W, H)
         crop = img_bgr[vy:vy + vh, vx:vx + vw]
@@ -191,7 +260,7 @@ def filter_and_dedup(cands, vehicles, img_wh, args):
     W, H = img_wh
     kept = []
 
-    # light geometry + min size
+    # geometry + min size
     for (x, y, w, h, s, src) in cands:
         if s < args.plate_min_conf:  # final acceptance threshold 
             continue
@@ -199,22 +268,37 @@ def filter_and_dedup(cands, vehicles, img_wh, args):
         mh = max(args.plate_min_h_px, int(args.plate_min_h_frac * H))
         if w < mw or h < mh:
             continue
-        ar = w / max(1.0, h)
-        if not (1.1 <= ar <= 9.0):   # very forgiving
+        if w > int(args.plate_max_w_frac * W) or h > int(args.plate_max_h_frac * H):
             continue
-
+        ar = w / max(1.0, h)
+        if not (1.1 <= ar <= 10):
+            continue
         if args.require_vehicle_overlap and vehicles:
             ok = False
+            chosen_v = None
             for (vx, vy, vw, vh, _, _) in vehicles:
-                vbox = (vx, vy, vw, vh)
+                if args.vehicle_pad_frac > 0:
+                    px = max(0, vx - int(args.vehicle_pad_frac * vw))
+                    py = max(0, vy - int(args.vehicle_pad_frac * vh))
+                    pw = min(W - px, vw + int(2 * args.vehicle_pad_frac * vw))
+                    ph = min(H - py, vh + int(2 * args.vehicle_pad_frac * vh))
+                    vbox = (px, py, pw, ph)
+                else:
+                    vbox = (vx, vy, vw, vh)
+
                 if center_in(vbox, (x, y, w, h)) or iou_xywh(vbox, (x, y, w, h)) >= args.plate_vehicle_iou:
-                    ok = True; break
+                    ok = True
+                    chosen_v = vbox
+                    break
             if not ok:
                 continue
+            if chosen_v is not None:
+                vx, vy, vw, vh = chosen_v
+                if (w * h) > args.plate_max_area_wrt_veh * (vw * vh):
+                    continue
 
         kept.append((x, y, w, h, s, src))
 
-    # dedup by IoU, keep highest score
     kept.sort(key=lambda t: t[4], reverse=True)
     final = []
     for cand in kept:
@@ -247,7 +331,12 @@ def process_image(path_in, path_out, args, yunet, veh_model, plate_model):
 
     all_plate_cands = [] if args.no_plates else collect_plate_candidates(img, plate_model, vehicles, args)
     plates = [] if args.no_plates else filter_and_dedup(all_plate_cands, vehicles, (W, H), args)
-
+    if vehicles:
+        plates = _temporal_one_plate_per_vehicle(
+        vehicles, plates, (img.shape[1], img.shape[0]),
+        persist_frames=args.persist_frames,
+        pad_frac=args.persist_pad_frac,
+        veh_iou=args.track_veh_iou)
     if args.debug:
         print(f"[{path_in.name}] veh={len(vehicles)} cand={len(all_plate_cands)} kept={len(plates)} faces={len(faces)}")
 
@@ -319,7 +408,9 @@ def _center_in(gt, pr):
 
 
 def _eval_dataset(args, files, in_root, gt_root, yunet, veh_model, plate_model):
-    all_preds = []; gts_by_img_cls = {}
+    gts_by_img_cls = {}
+    preds_by_img_cls = {}
+
     for img_id, f in enumerate(files):
         img = cv2.imread(str(f))
         if img is None: continue
@@ -328,51 +419,57 @@ def _eval_dataset(args, files, in_root, gt_root, yunet, veh_model, plate_model):
         gt_path = gt_root / rel.with_suffix(".txt")
         gts = _yolo_txt_to_abs(gt_path, W, H)
         for (x, y, w, h, cls) in gts:
-            gts_by_img_cls.setdefault((img_id, cls), []).append({"box": (x, y, w, h), "m": False})
+            gts_by_img_cls.setdefault((img_id, cls), []).append((x, y, w, h))
+
         preds = _predict_for_eval(img, args, yunet, veh_model, plate_model)
         for (cls, sc, box) in preds:
-            all_preds.append((img_id, cls, sc, box))
-    all_preds.sort(key=lambda t: t[2], reverse=True)
+            preds_by_img_cls.setdefault((img_id, cls), []).append((sc, box))
 
-    def is_match(gtb, prb):
-        if _coverage(gtb, prb) >= args.cov_thresh: return True
-        if iou_xywh(gtb, prb) >= args.iou_thresh: return True
-        if _center_in(gtb, prb): return True
-        return False
+    classes = sorted(set(c for (_, c) in gts_by_img_cls) | set(c for (_, c) in preds_by_img_cls))
+    if args.eval_keep_classes:
+        classes = [c for c in classes if c in set(args.eval_keep_classes)]
 
-    classes = sorted(set(c for _, c, _, _ in all_preds) | set(c for (_, c) in gts_by_img_cls))
-    results = {}; map_vals = []
+    print("== Evaluation ==")
     for cls in classes:
-        preds = [(img, sc, box) for (img, c, sc, box) in all_preds if c == cls]
-        n_gt = sum(len(v) for (k, v) in gts_by_img_cls.items() if k[1] == cls)
-        if n_gt == 0: continue
-        matched = {k: [False] * len(v) for (k, v) in gts_by_img_cls.items() if k[1] == cls}
-        tp, fp = [], []
-        for (img, sc, pbox) in preds:
-            key = (img, cls); jbest, best = -1, -1.0
-            if key in gts_by_img_cls:
-                for j, gt in enumerate(gts_by_img_cls[key]):
-                    if matched[key][j]: continue
-                    if is_match(gt["box"], pbox):
-                        iov = iou_xywh(gt["box"], pbox)
-                        if iov > best: best, jbest = iov, j
-            if jbest >= 0:
-                matched[key][jbest] = True; tp.append(1); fp.append(0)
-            else:
-                tp.append(0); fp.append(1)
-        tp = np.array(tp); fp = np.array(fp)
-        if tp.size == 0:
-            results[cls] = {"AP": 0.0, "precision": [], "recall": []}; continue
-        tp_c = np.cumsum(tp); fp_c = np.cumsum(fp)
-        rec = tp_c / float(n_gt)
-        prec = tp_c / np.maximum(1, tp_c + fp_c)
-        mprec = np.maximum.accumulate(prec[::-1])[::-1]
-        ap = np.trapz(mprec, rec)
-        results[cls] = {"AP": float(ap), "precision": rec.tolist(), "recall": rec.tolist()}
-        map_vals.append(ap)
-    mAP = float(np.mean(map_vals)) if map_vals else 0.0
-    return mAP, results
+        tp = fp = fn = tn = 0
+        for img_id, f in enumerate(files):
+            gt_list = gts_by_img_cls.get((img_id, cls), [])
+            pr_list = preds_by_img_cls.get((img_id, cls), [])
 
+            gt_pos = len(gt_list) > 0
+            if gt_pos:
+                matched_gt = 0
+                if pr_list:
+                    for gt in gt_list:
+                        if any(
+                            (_coverage(gt, pbox) >= args.cov_thresh) or
+                            (iou_xywh(gt, pbox) >= args.iou_thresh) or
+                            _center_in(gt, pbox)
+                            for (_, pbox) in pr_list
+                        ):
+                            matched_gt += 1
+                frac = matched_gt / float(len(gt_list)) if gt_list else 0.0
+                if frac >= args.frame_ok_thresh:
+                    tp += 1
+                else:
+                    fn += 1
+            else:
+                tn += 1
+
+
+        overall_tp += tp; overall_fn += fn; overall_tn += tn
+        prec = tp / max(1, tp)  
+        rec  = tp / max(1, tp + fn)
+        acc  = (tp + tn) / max(1, tp + tn + fn)
+        f1   = (2 * tp) / max(1, 2 * tp + fn)
+        print(f"class {cls}: acc={acc:.4f}  prec={prec:.4f}  rec={rec:.4f}  f1={f1:.4f}")
+
+    overall_prec = overall_tp / max(1, overall_tp)  
+    overall_rec  = overall_tp / max(1, overall_tp + overall_fn)
+    overall_acc  = (overall_tp + overall_tn) / max(1, overall_tp + overall_tn + overall_fn)
+    overall_f1   = (2 * overall_tp) / max(1, 2 * overall_tp + overall_fn)
+    print(f"overall: acc={overall_acc:.4f}  prec={overall_prec:.4f}  rec={overall_rec:.4f}  f1={overall_f1:.4f}")
+    return 0.0, {}
 
 def main():
     ap = argparse.ArgumentParser("Vehicles → plates: robust keep-all or one-per-vehicle with generous gates")
@@ -385,6 +482,7 @@ def main():
     ap.add_argument("--no-plates", action="store_true")
     ap.add_argument("--plate-accept-global", action="store_true", default=True)
     ap.add_argument("--no-plate-accept-global", dest="plate_accept_global", action="store_false")
+    
 
     ap.add_argument("--face-score-thres", type=float, default=0.50)
     ap.add_argument("--face-nms-thres",   type=float, default=0.45)
@@ -393,19 +491,25 @@ def main():
     ap.add_argument("--vehicle-model", type=str, default="yolov8n.pt")
     ap.add_argument("--vehicle-conf",  type=float, default=0.25)
     ap.add_argument("--vehicle-iou",   type=float, default=0.60)
-    ap.add_argument("--vehicle-imgsz", type=int,   default=1024)
+    ap.add_argument("--vehicle-imgsz", type=int,   default=1536)
+    ap.add_argument("--vehicle-pad-frac", type=float, default=0.12)
+
 
     ap.add_argument("--plate-model",        type=str,   default="weights/plate-v1n.pt")
     ap.add_argument("--plate-probe-conf",   type=float, default=0.001)
     ap.add_argument("--plate-global-conf",  type=float, default=0.35)
     ap.add_argument("--plate-iou",          type=float, default=0.60)
-    ap.add_argument("--plate-imgsz",        type=int,   default=2048)
+    ap.add_argument("--plate-imgsz",        type=int,   default=2304)
+
+    ap.add_argument("--plate-max-w-frac",   type=float, default=0.30)  # max width vs image
+    ap.add_argument("--plate-max-h-frac",   type=float, default=0.20)  # max height vs image
+    ap.add_argument("--plate-max-area-wrt-veh", type=float, default=0.25)  # max area vs vehicle box
 
     ap.add_argument("--plate-min-w-px",   type=int,   default=10)
     ap.add_argument("--plate-min-h-px",   type=int,   default=6)
     ap.add_argument("--plate-min-w-frac", type=float, default=0.006)
     ap.add_argument("--plate-min-h-frac", type=float, default=0.004)
-    ap.add_argument("--plate-min-conf",   type=float, default=0.05)   # final acceptance threshold
+    ap.add_argument("--plate-min-conf",   type=float, default=0.04)   # final acceptance threshold
 
     ap.add_argument("--require-vehicle-overlap", dest="require_vehicle_overlap", action="store_true", default=True)
     ap.add_argument("--plate-vehicle-iou", type=float, default=0.02)
@@ -413,19 +517,29 @@ def main():
     ap.add_argument("--one-per-vehicle",   action="store_true", default=False)
 
     ap.add_argument("--viz-all-plates", action="store_true")
+    ap.add_argument("--persist-frames", type=int, default=3)
+    ap.add_argument("--persist-pad-frac", type=float, default=0.10)
+    ap.add_argument("--track-veh-iou", type=float, default=0.5)
 
     ap.add_argument("--blur", choices=["gaussian", "pixelate"], default="pixelate")
     ap.add_argument("--kernel",     type=int, default=None)
-    ap.add_argument("--pixel-size", type=int, default=14)
+    ap.add_argument("--pixel-size", type=int, default=8)
 
     ap.add_argument("--debug", action="store_true")
-
+    ap.add_argument("--frame-ok-thresh", type=float, default=0.5)
+    ap.add_argument("--eval-keep-classes", type=str, default=None)
     ap.add_argument("--eval", action="store_true")
     ap.add_argument("--gt-root", type=str, default=None)
     ap.add_argument("--cov-thresh", type=float, default=0.30)
     ap.add_argument("--iou-thresh", type=float, default=0.10)
 
     args = ap.parse_args()
+    global PLATE_TRACKS, _NEXT_TRACK_ID
+    PLATE_TRACKS.clear(); _NEXT_TRACK_ID = 1
+    if args.eval_keep_classes:
+        args.eval_keep_classes = [int(x) for x in args.eval_keep_classes.split(",")]
+    else:
+        args.eval_keep_classes = None
 
     yunet       = None if args.no_faces    else load_yunet(args.face_score_thres, args.face_nms_thres, args.face_imgsz)
     veh_model   = None if args.no_vehicles else load_yolo(args.vehicle_model)
@@ -435,7 +549,10 @@ def main():
     if in_path.is_file():
         files = [in_path]; outs = [out_root if out_root.suffix else out_root / in_path.name]
     else:
-        files = list(in_path.rglob(args.glob))
+        def _nat_key(p):  # natural sort: frame_2.png before frame_10.png
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', str(p))]
+
+        files = sorted(in_path.rglob(args.glob), key=_nat_key)
         outs  = [out_root / f.relative_to(in_path) for f in files]
     if not files:
         print("No input images found."); return
@@ -446,11 +563,7 @@ def main():
 
     if args.eval and in_path.is_dir():
         gt_root = Path(args.gt_root) if args.gt_root else in_path.parents[1] / "annotated"
-        mAP, res = _eval_dataset(args, files, in_path, gt_root, yunet, veh_model, plate_model)
-        print("== Evaluation ==")
-        for cls, v in sorted(res.items()):
-            print(f"class {cls} AP: {v['AP']:.4f}")
-        print(f"mAP: {mAP:.4f}")
+        _eval_dataset(args, files, in_path, gt_root, yunet, veh_model, plate_model)
 
 
 if __name__ == "__main__":
