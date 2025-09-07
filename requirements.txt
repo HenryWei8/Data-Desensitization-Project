@@ -8,5 +8,5 @@ certifi>=2024.2.2
 
 
 
-PYTHONUNBUFFERED=1 python3 desensitize.py --input data/imgs --output mosaic_max --glob "*.[Pp][Nn][Gg]" --mode blur --vehicle-model yolov8n.pt --vehicle-conf 0.15 --vehicle-iou 0.55 --vehicle-imgsz 2304 --plate-model weights/plate-v1n.pt --plate-probe-conf 0.001 --plate-global-conf 0.20 --plate-iou 0.60 --plate-imgsz 3584 --plate-min-conf 0.015 --plate-min-w-frac 0.002 --plate-min-h-frac 0.0015 --plate-merge-iou 0.50 --vehicle-pad-frac 0.20 --plate-max-area-wrt-veh 0.60 --plate-vehicle-iou 0.01 --persist-frames 6 --persist-pad-frac 0.20 --track-veh-iou 0.35 --blur pixelate --pixel-size 8 --eval --gt-root annotated --frame-ok-thresh 0.50 --eval-keep-classes 0,1 --cov-thresh 0.20 --iou-thresh 0.08 --debug
 
+PYTHONUNBUFFERED=1 python3 desensitize.py
